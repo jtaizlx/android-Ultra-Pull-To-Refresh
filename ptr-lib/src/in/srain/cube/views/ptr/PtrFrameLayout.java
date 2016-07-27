@@ -18,6 +18,7 @@ public class PtrFrameLayout extends ViewGroup {
 
     // status enum
     public final static byte PTR_STATUS_INIT = 1;
+    private final int mTouchSlop;
     private byte mStatus = PTR_STATUS_INIT;
     public final static byte PTR_STATUS_PREPARE = 2;
     public final static byte PTR_STATUS_LOADING = 3;
@@ -69,6 +70,15 @@ public class PtrFrameLayout extends ViewGroup {
         }
     };
 
+    private static final float X_RATIO = 0.5f;
+    private float mLastMotionX;
+    private float mLastMotionY;
+    private float mInitialMotionX;
+    private float mInitialMotionY;
+    private int mActivePointerId;
+    private boolean mIsBeingDragged;
+    private boolean mIsUnableToDrag;
+
     public PtrFrameLayout(Context context) {
         this(context, null);
     }
@@ -107,7 +117,9 @@ public class PtrFrameLayout extends ViewGroup {
         mScrollChecker = new ScrollChecker();
 
         final ViewConfiguration conf = ViewConfiguration.get(getContext());
-        mPagingTouchSlop = conf.getScaledTouchSlop() * 2;
+        // mPagingTouchSlop = conf.getScaledTouchSlop() * 2;
+        mTouchSlop = conf.getScaledTouchSlop();
+        mPagingTouchSlop = conf.getScaledPagingTouchSlop();
     }
 
     @Override
@@ -276,73 +288,152 @@ public class PtrFrameLayout extends ViewGroup {
         if (!isEnabled() || mContent == null || mHeaderView == null) {
             return dispatchTouchEventSupper(e);
         }
+
         int action = e.getAction();
+        if ((action & MotionEvent.ACTION_MASK) != MotionEvent.ACTION_DOWN) {
+            if (mIsUnableToDrag) {
+                return super.dispatchTouchEvent(e);
+            }
+        }
+
         switch (action) {
             case MotionEvent.ACTION_UP:
             case MotionEvent.ACTION_CANCEL:
-                mPtrIndicator.onRelease();
-                if (mPtrIndicator.hasLeftStartPosition()) {
-                    if (DEBUG) {
-                        PtrCLog.d(LOG_TAG, "call onRelease when user release");
-                    }
-                    onRelease(false);
-                    if (mPtrIndicator.hasMovedAfterPressedDown()) {
-                        sendCancelEvent();
-                        return true;
-                    }
-                    return dispatchTouchEventSupper(e);
-                } else {
-                    return dispatchTouchEventSupper(e);
-                }
-
+                return onTouchUp(e);
             case MotionEvent.ACTION_DOWN:
-                mHasSendCancelEvent = false;
-                mPtrIndicator.onPressDown(e.getX(), e.getY());
-
-                mScrollChecker.abortIfWorking();
-
-                mPreventForHorizontal = false;
-                // The cancel event will be sent once the position is moved.
-                // So let the event pass to children.
-                // fix #93, #102
-                dispatchTouchEventSupper(e);
-                return true;
-
+                return onTouchDown(e);
             case MotionEvent.ACTION_MOVE:
-                mLastMoveEvent = e;
-                mPtrIndicator.onMove(e.getX(), e.getY());
-                float offsetX = mPtrIndicator.getOffsetX();
-                float offsetY = mPtrIndicator.getOffsetY();
+                return onTouchMove(e);
+            default:
+                return dispatchTouchEventSupper(e);
+        }
+    }
 
-                if (mDisableWhenHorizontalMove && !mPreventForHorizontal && (Math.abs(offsetX) > mPagingTouchSlop && Math.abs(offsetX) > Math.abs(offsetY))) {
-                    if (mPtrIndicator.isInStartPosition()) {
-                        mPreventForHorizontal = true;
-                    }
-                }
-                if (mPreventForHorizontal) {
-                    return dispatchTouchEventSupper(e);
-                }
+    private boolean onTouchMove(MotionEvent e) {
+        final int pointerIndex = e.findPointerIndex(mActivePointerId);
+        if (pointerIndex == -1) {
+            return true;
+        }
 
-                boolean moveDown = offsetY > 0;
-                boolean moveUp = !moveDown;
-                boolean canMoveUp = mPtrIndicator.hasLeftStartPosition();
+        // 截获下move事件达到一定距离和dx, dy比例
+        if (mDisableWhenHorizontalMove && !mIsBeingDragged && !mPtrIndicator.hasLeftStartPosition() && !onIntercept(e)) {
+            return dispatchTouchEventSupper(e);
+        }
 
-                if (DEBUG) {
-                    boolean canMoveDown = mPtrHandler != null && mPtrHandler.checkCanDoRefresh(this, mContent, mHeaderView);
-                    PtrCLog.v(LOG_TAG, "ACTION_MOVE: offsetY:%s, currentPos: %s, moveUp: %s, canMoveUp: %s, moveDown: %s: canMoveDown: %s", offsetY, mPtrIndicator.getCurrentPosY(), moveUp, canMoveUp, moveDown, canMoveDown);
-                }
+        if (mDisableWhenHorizontalMove && !mIsBeingDragged && !mPtrIndicator.hasLeftStartPosition()) {
+            return dispatchTouchEventSupper(e);
+        }
 
-                // disable move when header not reach top
-                if (moveDown && mPtrHandler != null && !mPtrHandler.checkCanDoRefresh(this, mContent, mHeaderView)) {
-                    return dispatchTouchEventSupper(e);
-                }
+        mLastMoveEvent = e;
+        mPtrIndicator.onMove(e.getX(pointerIndex), e.getY(pointerIndex));
+        float offsetX = mPtrIndicator.getOffsetX();
+        float offsetY = mPtrIndicator.getOffsetY();
 
-                if ((moveUp && canMoveUp) || moveDown) {
-                    movePos(offsetY);
-                    return true;
-                }
+        if (mDisableWhenHorizontalMove && !mPreventForHorizontal && (Math.abs(offsetX) > mPagingTouchSlop && Math.abs(offsetX) > Math.abs(offsetY))) {
+            if (mPtrIndicator.isInStartPosition()) {
+                mPreventForHorizontal = true;
+            }
+        }
+        if (mPreventForHorizontal) {
+            return dispatchTouchEventSupper(e);
+        }
+
+        boolean moveDown = offsetY > 0;
+        boolean moveUp = !moveDown;
+        boolean canMoveUp = mPtrIndicator.hasLeftStartPosition();
+
+        if (DEBUG) {
+            boolean canMoveDown = mPtrHandler != null && mPtrHandler.checkCanDoRefresh(this, mContent, mHeaderView);
+            PtrCLog.v(LOG_TAG, "ACTION_MOVE: offsetY:%s, currentPos: %s, moveUp: %s, canMoveUp: %s, moveDown: %s: canMoveDown: %s", offsetY, mPtrIndicator.getCurrentPosY(), moveUp, canMoveUp, moveDown, canMoveDown);
+        }
+
+        // disable move when header not reach top
+        if (moveDown && mPtrHandler != null && !mPtrHandler.checkCanDoRefresh(this, mContent, mHeaderView)) {
+            return dispatchTouchEventSupper(e);
+        }
+
+        if ((moveUp && canMoveUp) || moveDown) {
+            movePos(offsetY);
+            return true;
         }
         return dispatchTouchEventSupper(e);
+    }
+
+    // 截获touch事件,看看是否达到我们能处理的条件
+    private boolean onIntercept(MotionEvent ev) {
+        final int pointerIndex = ev.findPointerIndex(mActivePointerId);
+        final float x = ev.getX(pointerIndex);
+        final float y = ev.getY(pointerIndex);
+        final float dx = x - mLastMotionX;
+        final float dy = y - mLastMotionY;
+        final float xDiff = Math.abs(x - mInitialMotionX);
+        final float yDiff = Math.abs(dy);
+
+        // 是否达到竖直滑动的条件
+        if (yDiff > mTouchSlop && yDiff > xDiff * X_RATIO) {
+            mIsBeingDragged = true;
+            mLastMotionX = x;
+            mLastMotionY = dy > 0 ? mInitialMotionY + mTouchSlop
+                    : mInitialMotionY - mTouchSlop;
+            return true;
+        } else if (xDiff > mTouchSlop) {
+            // The finger has moved enough in the vertical
+            // direction to be counted as a drag...  abort
+            // any attempt to drag horizontally, to work correctly
+            // with children that have scrolling containers.
+            mIsUnableToDrag = true;
+            return true;
+        }
+        return false;
+    }
+
+    private boolean onTouchDown(MotionEvent e) {
+        mHasSendCancelEvent = false;
+        mIsUnableToDrag = false;
+        mScrollChecker.abortIfWorking();
+
+        mActivePointerId = e.getPointerId(0);
+        final int pointerIndex = e.findPointerIndex(mActivePointerId);
+        if (pointerIndex == -1) {
+            return true;
+        }
+
+        mPtrIndicator.onPressDown(e.getX(pointerIndex), e.getY(pointerIndex));
+
+        mLastMotionX = e.getX(pointerIndex);
+        mLastMotionY = e.getY(pointerIndex);
+        mInitialMotionX = mLastMotionX;
+        mInitialMotionY = mLastMotionY;
+
+        mPreventForHorizontal = false;
+        // The cancel event will be sent once the position is moved.
+        // So let the event pass to children.
+        // fix #93, #102
+        dispatchTouchEventSupper(e);
+        return true;
+    }
+
+    private boolean onTouchUp(MotionEvent e) {
+        releaseTouchUp();
+        mPtrIndicator.onRelease();
+        if (mPtrIndicator.hasLeftStartPosition()) {
+            if (DEBUG) {
+                PtrCLog.d(LOG_TAG, "call onRelease when user release");
+            }
+            onRelease(false);
+            if (mPtrIndicator.hasMovedAfterPressedDown()) {
+                sendCancelEvent();
+                return true;
+            }
+            return dispatchTouchEventSupper(e);
+        } else {
+            return dispatchTouchEventSupper(e);
+        }
+    }
+
+    private void releaseTouchUp() {
+        mIsUnableToDrag = false;
+        mIsBeingDragged = false;
     }
 
     /**
