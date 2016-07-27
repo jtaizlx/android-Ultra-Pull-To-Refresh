@@ -298,7 +298,7 @@ public class PtrFrameLayout extends ViewGroup {
 
         switch (action) {
             case MotionEvent.ACTION_UP:
-            case MotionEvent.ACTION_CANCEL:
+            case MotionEvent.ACTION_CANCEL: {
                 releaseTouchUp();
                 mPtrIndicator.onRelease();
                 if (mPtrIndicator.hasLeftStartPosition()) {
@@ -312,7 +312,8 @@ public class PtrFrameLayout extends ViewGroup {
                     }
                     return dispatchTouchEventSupper(e);
                 }
-            case MotionEvent.ACTION_DOWN:
+            }
+            case MotionEvent.ACTION_DOWN: {
                 mHasSendCancelEvent = false;
                 mIsUnableToDrag = false;
                 mScrollChecker.abortIfWorking();
@@ -336,9 +337,10 @@ public class PtrFrameLayout extends ViewGroup {
                 // fix #93, #102
                 dispatchTouchEventSupper(e);
                 return true;
-            case MotionEvent.ACTION_MOVE:
-                final int pointerIndex1 = e.findPointerIndex(mActivePointerId);
-                if (pointerIndex1 == -1) {
+            }
+            case MotionEvent.ACTION_MOVE: {
+                final int pointerIndex = e.findPointerIndex(mActivePointerId);
+                if (pointerIndex == -1) {
                     return true;
                 }
 
@@ -352,7 +354,7 @@ public class PtrFrameLayout extends ViewGroup {
                 }
 
                 mLastMoveEvent = e;
-                mPtrIndicator.onMove(e.getX(pointerIndex1), e.getY(pointerIndex1));
+                mPtrIndicator.onMove(e.getX(pointerIndex), e.getY(pointerIndex));
                 float offsetX = mPtrIndicator.getOffsetX();
                 float offsetY = mPtrIndicator.getOffsetY();
 
@@ -384,6 +386,7 @@ public class PtrFrameLayout extends ViewGroup {
                     return true;
                 }
                 return dispatchTouchEventSupper(e);
+            }
         }
         return dispatchTouchEventSupper(e);
     }
